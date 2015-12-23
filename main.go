@@ -17,16 +17,18 @@ import (
 func sentryMiddleware(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
-			if rval := recover(); rval != nil {
+			if err := recover(); err != nil {
 				debug.PrintStack()
-				rvalStr := fmt.Sprint(rval)
+				errStr := fmt.Sprint(err)
 				packet := raven.NewPacket(
-					rvalStr,
-					raven.NewException(errors.New(rvalStr),
-						raven.NewStacktrace(2, 3, nil)),
+					errStr,
+					raven.NewException(errors.New(errStr), raven.NewStacktrace(2, 3, nil)),
 					raven.NewHttp(r))
 				raven.Capture(packet, nil)
-				http.Error(w, http.StatusText(500), 500)
+				http.Error(
+					w,
+					http.StatusText(http.StatusInternalServerError),
+					http.StatusInternalServerError)
 			}
 		}()
 		next.ServeHTTP(w, r)
