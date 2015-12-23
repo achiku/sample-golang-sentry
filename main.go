@@ -5,10 +5,34 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"runtime/debug"
 	"time"
 
 	"github.com/getsentry/raven-go"
+	"github.com/go-zoo/bone"
+	"github.com/rs/xhandler"
+	"golang.org/x/net/context"
 )
+
+func sentryMiddleware(next http.Handler) http.Handler {
+	fn := func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rval := recover(); rval != nil {
+				debug.PrintStack()
+				rvalStr := fmt.Sprint(rval)
+				packet := raven.NewPacket(
+					rvalStr,
+					raven.NewException(errors.New(rvalStr),
+						raven.NewStacktrace(2, 3, nil)),
+					raven.NewHttp(r))
+				raven.Capture(packet, nil)
+				http.Error(w, http.StatusText(500), 500)
+			}
+		}()
+		next.ServeHTTP(w, r)
+	}
+	return http.HandlerFunc(fn)
+}
 
 func loggingMiddleware(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
@@ -24,19 +48,36 @@ func normalHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "normal")
 }
 
+func contextNormalHandler(ctx context.Context, w http.ResponseWriter, r *http.Request) {
+	fmt.Fprintf(w, "normal with context")
+}
+
 func panicHandler(w http.ResponseWriter, r *http.Request) {
-	err := errors.New("test error for sentry")
+	err := errors.New("error for sentry: from panicHandler")
 	panic(err)
 	fmt.Fprintf(w, "panic")
 }
 
-func main() {
+func contextPanicHandler(ctx context.Context, w http.ResponseWriter, r *http.Request) {
+	err := errors.New("error for sentry: from contextPanicHandler")
+	panic(err)
+	fmt.Fprintf(w, "panic with context")
+}
 
-	http.Handle("/normal", loggingMiddleware(
-		http.HandlerFunc(raven.RecoveryHandler(normalHandler))))
-	http.Handle("/panic", loggingMiddleware(
-		http.HandlerFunc(raven.RecoveryHandler(panicHandler))))
-	if err := http.ListenAndServe(":8080", nil); err != nil {
+func main() {
+	c := xhandler.Chain{}
+	c.Use(sentryMiddleware)
+	c.Use(loggingMiddleware)
+	c.UseC(xhandler.CloseHandler)
+	c.UseC(xhandler.TimeoutHandler(2 * time.Second))
+
+	mux := bone.New()
+	mux.Get("/normal", c.HandlerF(normalHandler))
+	mux.Get("/panic", c.HandlerF(panicHandler))
+	mux.Get("/context/normal", c.HandlerFC(contextNormalHandler))
+	mux.Get("/context/panic", c.HandlerFC(contextPanicHandler))
+
+	if err := http.ListenAndServe(":8080", mux); err != nil {
 		log.Fatal(err)
 	}
 }
