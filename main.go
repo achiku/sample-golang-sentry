@@ -16,6 +16,7 @@ import (
 
 func sentryMiddleware(next http.Handler) http.Handler {
 	fn := func(w http.ResponseWriter, r *http.Request) {
+		raven.SetHttpContext(raven.NewHttp(r))
 		defer func() {
 			if err := recover(); err != nil {
 				debug.PrintStack()
